@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Call with PDF Generation</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        video {
+            width: 45%;
+            margin: 10px;
+        }
+        #video-container {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-around;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2 class="my-4 text-center">Video Call Rooms</h2>
+        <div class="row mb-4">
+            <div class="col-md-6 offset-md-3 d-flex">
+                <input type="text" id="roomId" class="form-control" placeholder="Enter your Client ID (Medical Number)">
+                <button class="btn btn-primary ms-2" onclick="joinRoom()">Join Room</button>
+            </div>
+        </div>
+        <div class="row mb-4">
+            <div class="col text-center">
+                <button id="muteButton" class="btn btn-secondary" onclick="toggleMute()">Mute</button>
+                <button id="cameraButton" class="btn btn-secondary ms-2" onclick="toggleCamera()">Turn Off Camera</button>
+                <button class="btn btn-info ms-2" data-bs-toggle="modal" data-bs-target="#pdfModal">Generate PDF</button>
+            </div>
+        </div>
+        <div id="video-container" class="row mt-4">
+            <div class="col text-center">
+                <video id="localVideo" autoplay playsinline></video>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap Modal for PDF Generation -->
+    <div class="modal fade" id="pdfModal" tabindex="-1" aria-labelledby="pdfModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="pdfModalLabel">Generate Medical Report</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="pdfForm">
+                        <div class="mb-3">
+                            <label for="name" class="form-label">Name</label>
+                            <input type="text" class="form-control" id="name" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="birthDate" class="form-label">Birth Date</label>
+                            <input type="date" class="form-control" id="birthDate" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="medicament" class="form-label">Medicament</label>
+                            <input type="text" class="form-control" id="medicament" required>
+                        </div>
+                        <button type="button" class="btn btn-primary" onclick="generatePDF()">Generate PDF</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS and dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- jsPDF Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+    <script>
+        const videoContainer = document.getElementById('video-container');
+        let localStream;
+        let peerConnections = {};
+        let signalingSocket;
+        let roomId;
+        let isMuted = false;
+        let isCameraOn = true;
+
+        const configuration = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' }
+            ]
+        };
+
+        async function joinRoom() {
+            roomId = document.getElementById('roomId').value;
+            if (!roomId) {
+                alert("Please enter a room ID");
+                return;
+            }
+
+            signalingSocket = new WebSocket('ws://localhost:8080/video-call');
+
+            signalingSocket.onopen = () => {
+                signalingSocket.send(`type=join&roomId=${roomId}`);
+            };
+
+            signalingSocket.onmessage = async (message) => {
+                const data = parseMessage(message.data);
+
+                if (data.sdp) {
+                    handleRemoteSDP(data.from, data.sdp);
+                } else if (data.ice) {
+                    await peerConnections[data.from].addIceCandidate(data.ice);
+                }
+            };
+
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            addLocalStream(localStream);
+
+            signalingSocket.onclose = () => {
+                for (let pc in peerConnections) {
+                    peerConnections[pc].close();
+                }
+                peerConnections = {};
+            };
+        }
+
+        function addLocalStream(stream) {
+            const localVideo = document.getElementById('localVideo');
+            localVideo.srcObject = stream;
+        }
+
+        async function handleRemoteSDP(senderId, sdp) {
+            if (!peerConnections[senderId]) {
+                createPeerConnection(senderId);
+            }
+            const description = new RTCSessionDescription(sdp);
+            await peerConnections[senderId].setRemoteDescription(description);
+            if (description.type === 'offer') {
+                const answer = await peerConnections[senderId].createAnswer();
+                await peerConnections[senderId].setLocalDescription(answer);
+                signalingSocket.send(serializeMessage('sdp', roomId, senderId, answer));
+            }
+        }
+
+        function createPeerConnection(id) {
+            const peerConnection = new RTCPeerConnection(configuration);
+            peerConnections[id] = peerConnection;
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    signalingSocket.send(serializeMessage('candidate', roomId, id, event.candidate));
+                }
+            };
+
+            peerConnection.ontrack = (event) => {
+                const [stream] = event.streams;
+                addRemoteStream(stream, id);
+            };
+
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+        }
+
+        function addRemoteStream(stream, id) {
+            let videoElement = document.getElementById(id);
+            if (!videoElement) {
+                videoElement = document.createElement('video');
+                videoElement.id = id;
+                videoElement.autoplay = true;
+                videoElement.playsinline = true;
+                videoContainer.appendChild(videoElement);
+            }
+            videoElement.srcObject = stream;
+        }
+
+        function toggleMute() {
+            isMuted = !isMuted;
+            localStream.getAudioTracks().forEach(track => track.enabled = !isMuted);
+            document.getElementById('muteButton').innerText = isMuted ? 'Unmute' : 'Mute';
+        }
+
+        function toggleCamera() {
+            isCameraOn = !isCameraOn;
+            localStream.getVideoTracks().forEach(track => track.enabled = isCameraOn);
+            document.getElementById('cameraButton').innerText = isCameraOn ? 'Turn Off Camera' : 'Turn On Camera';
+        }
+
+        // PDF Generation Function
+        function generatePDF() {
+            const { jsPDF } = window.jspdf;
+
+            const name = document.getElementById('name').value;
+            const birthDate = document.getElementById('birthDate').value;
+            const medicament = document.getElementById('medicament').value;
+
+            // Create a new PDF document
+            const doc = new jsPDF();
+
+            // Add title
+            doc.setFontSize(22);
+            doc.text('Medical Report', 105, 20, null, null, 'center');
+
+            // Load image from URL and convert it to base64
+            const imageUrl = 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcToxZkXXXjA-ItXadwovg3WkFCEd_beKRuYNVvuI2cE38XQvuXENoGGA1qqQ_nV0bH0yU0&usqp=CAU'; // Replace with your image URL
+            loadImageToBase64(imageUrl, (imgData) => {
+                // Add the image to the PDF
+                doc.addImage(imgData, 'PNG', 80, 30, 50, 50); // Adjust the position and size as needed
+
+                // Add table header
+                doc.setFontSize(12);
+                doc.text('Name', 20, 100);
+                doc.text('Birth Date', 80, 100);
+                doc.text('Medicament', 140, 100);
+
+                // Add table content
+                doc.setFontSize(10);
+                doc.text(name, 20, 110);
+                doc.text(birthDate, 80, 110);
+                doc.text(medicament, 140, 110);
+
+                // Add system date and time
+                const currentDateTime = formatDateTime(new Date());
+                doc.text(`Generated on: ${currentDateTime}`, 20, 130);
+
+                // Save the PDF
+                doc.save('medical_report.pdf');
+            });
+        }
+
+        // Function to load an image from a URL and convert it to a base64 string
+        function loadImageToBase64(url, callback) {
+            const img = new Image();
+            img.crossOrigin = 'Anonymous';
+            img.onload = function () {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.width;
+                canvas.height = img.height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                const dataURL = canvas.toDataURL('image/png');
+                callback(dataURL);
+            };
+            img.src = url;
+        }
+
+        // Function to format the current date and time
+        function formatDateTime(date) {
+            const options = { 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric', 
+                hour: '2-digit', 
+                minute: '2-digit', 
+                second: '2-digit' 
+            };
+            return date.toLocaleDateString(undefined, options);
+        }
+
+        // Utility functions
+        function serializeMessage(type, roomId, targetId, content) {
+            return JSON.stringify({
+                type,
+                roomId,
+                from: signalingSocket.id,
+                to: targetId,
+                [type === 'candidate' ? 'ice' : 'sdp']: content
+            });
+        }
+
+        function parseMessage(data) {
+            return JSON.parse(data);
+        }
+    </script>
+</body>
+</html>
