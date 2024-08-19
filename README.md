@@ -1,6 +1,6 @@
 # 🩺 Doctor-Patient Video Call Web Application
 
-**See this video to understand**: https://github.com/khalil135711/AWS_S3-SSO-Spring/Spring Boot And WebRTC-2.mp4
+**See this video to understand**: [https://github.com/khalil135711/AWS_S3-SSO-Spring/Spring Boot And WebRTC-2.mp4](https://github.com/khalil135711/AWS_S3-SSO-Spring/blob/main/Spring%20Boot%20And%20WebRTC-2.mp4)
 
 This web application facilitates real-time video calls between doctors and patients. Built using Spring Boot, WebRTC, and Bootstrap, it allows doctors and patients to connect via video calls and generate personalized *medical reports* in PDF format directly from the application.
 
